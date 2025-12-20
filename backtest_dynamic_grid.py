@@ -214,6 +214,7 @@ def load_date_range(
                 'timestamp': pd.to_datetime(df[timestamp_col]),
                 'price': df[price_col].astype(float)
             })
+            #df_clean = df_clean.drop_duplicates()
             all_dfs.append(df_clean)
             loaded_count += 1
             if verbose:
