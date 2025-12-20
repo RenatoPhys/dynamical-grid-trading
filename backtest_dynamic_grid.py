@@ -466,7 +466,11 @@ def simulate_trades(df: pd.DataFrame, config: StrategyConfig) -> pd.DataFrame:
     df['trade_exit_price'] = exit_price
     df['trade_points'] = trade_points
     df['exit_idx'] = exit_idx
-    df['profit'] = trade_points * config.point_value - config.tc
+    df['profit'] = np.where(
+                            df['trade_entry_price'] != 0,
+                            trade_points * config.point_value - config.tc,
+                            0
+                        )
     df['accumulated_profit'] = df['profit'].cumsum()
     
     # Clean up helper columns
@@ -620,9 +624,9 @@ if __name__ == "__main__":
     # CONFIGURATION
     # =========================
     config = StrategyConfig(
-        distance=60,
+        distance=40,
         stop_loss=60,
-        take_profit=60,
+        take_profit=25,
         point_value=0.20,
         tc = 0.2*5,
         invert_signals=True  # False = momentum (breakout), True = mean-reversion
