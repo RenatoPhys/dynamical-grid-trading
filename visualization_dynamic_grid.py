@@ -1,9 +1,11 @@
 """
-Visualization Module for Dynamic Grid Trading Backtest
-=======================================================
-Provides comprehensive visualizations for analyzing trading backtest results.
+Visualization Module for Dynamic Grid Trading Backtest (Daily Aggregated)
+==========================================================================
+Provides comprehensive visualizations using daily aggregated data for 
+efficient analysis of large tick-level backtest results.
 
 Author: Renato Critelli
+Modified: All visualizations now use daily aggregated data for performance
 """
 
 # =============================================================================
@@ -44,11 +46,12 @@ class PlotConfig:
 
 
 # =============================================================================
-# BACKTEST VISUALIZER CLASS
+# BACKTEST VISUALIZER CLASS (DAILY AGGREGATED)
 # =============================================================================
 class BacktestVisualizer:
     """
     Visualization class for dynamic grid trading backtest results.
+    All visualizations use daily aggregated data for performance with large datasets.
     
     Parameters
     ----------
@@ -79,51 +82,30 @@ class BacktestVisualizer:
         timeframe: str = 'Tick',
         config: Optional[PlotConfig] = None
     ):
-        self.results = results.copy()
-        self.trades = trades.copy()
         self.symbol = symbol
         self.timeframe = timeframe
         self.config = config or PlotConfig()
         
-        # Prepare data for visualization
-        self._prepare_data()
-    
-    def _prepare_data(self):
-        """Prepare and enrich data for visualization."""
-        # Ensure timestamp is datetime
-        if 'timestamp' in self.results.columns:
-            self.results['timestamp'] = pd.to_datetime(self.results['timestamp'])
-            self.results = self.results.set_index('timestamp')
+        # Store trades for aggregation
+        self.trades = trades.copy()
         
-        # Calculate drawdown
-        self.results['equity'] = self.results['accumulated_profit']
-        self.results['peak'] = self.results['equity'].cummax()
-        self.results['drawdown'] = self.results['equity'] - self.results['peak']
-        self.results['drawdown_pct'] = np.where(
-            self.results['peak'] != 0,
-            self.results['drawdown'] / self.results['peak'],
-            0
-        )
-        
-        # Add position column (1 = buy, -1 = sell, 0 = neutral)
-        self.results['position'] = 0
-        self.results.loc[self.results['flag_buy'] == 1, 'position'] = 1
-        self.results.loc[self.results['flag_sell'] == 1, 'position'] = -1
-        
-        # Prepare trades DataFrame
+        # Prepare trades data
         if 'timestamp' in self.trades.columns:
             self.trades['timestamp'] = pd.to_datetime(self.trades['timestamp'])
             self.trades = self.trades.set_index('timestamp')
         
+        # Add position column
         self.trades['position'] = 0
         self.trades.loc[self.trades['flag_buy'] == 1, 'position'] = 1
         self.trades.loc[self.trades['flag_sell'] == 1, 'position'] = -1
         
-        # Create daily resampled data
+        # Create daily aggregated data (this is the main data source)
         self._create_daily_data()
+        
+        print(f"[INFO] Loaded {len(self.trades)} trades across {len(self.daily)} trading days")
     
     def _create_daily_data(self):
-        """Create daily resampled DataFrame for daily visualizations."""
+        """Create daily resampled DataFrame for all visualizations."""
         trades = self.trades.copy()
         
         # Daily aggregation from trades
@@ -161,6 +143,9 @@ class BacktestVisualizer:
         self.daily['cum_profit_sell'] = self.daily['profit_sell'].cumsum()
         self.daily['cum_trades'] = self.daily['num_trades'].cumsum()
         
+        # Equity column (alias for cum_profit)
+        self.daily['equity'] = self.daily['cum_profit']
+        
         # Drawdown (daily)
         self.daily['peak'] = self.daily['cum_profit'].cummax()
         self.daily['drawdown'] = self.daily['cum_profit'] - self.daily['peak']
@@ -183,6 +168,32 @@ class BacktestVisualizer:
         self.daily['profit_ma7'] = self.daily['profit'].rolling(7, min_periods=1).mean()
         self.daily['profit_ma30'] = self.daily['profit'].rolling(30, min_periods=1).mean()
         self.daily['win_rate_ma7'] = self.daily['win_rate'].rolling(7, min_periods=1).mean()
+        
+        # Hourly aggregation for hour-based analysis
+        self._create_hourly_data()
+    
+    def _create_hourly_data(self):
+        """Create hourly aggregated data."""
+        trades = self.trades.copy()
+        trades['hour'] = trades.index.hour
+        trades['date'] = trades.index.date
+        
+        # Aggregate by hour
+        self.hourly = trades.groupby('hour').agg({
+            'profit': 'sum',
+            'trade_points': ['sum', 'count']
+        })
+        self.hourly.columns = ['profit', 'points', 'num_trades']
+        
+        # Buy/Sell by hour
+        self.hourly_buy = trades[trades['position'] == 1].groupby('hour')['profit'].sum()
+        self.hourly_sell = trades[trades['position'] == -1].groupby('hour')['profit'].sum()
+        
+        # Daily-hour breakdown for cumulative hour analysis
+        self.daily_hour = trades.groupby(['date', 'hour']).agg({
+            'profit': 'sum'
+        }).reset_index()
+        self.daily_hour.columns = ['date', 'hour', 'profit']
     
     def get_daily_data(self) -> pd.DataFrame:
         """
@@ -191,19 +202,12 @@ class BacktestVisualizer:
         Returns
         -------
         pd.DataFrame
-            Daily aggregated data with columns:
-            - profit, points, num_trades
-            - tp_count, sl_count, eod_count
-            - profit_buy, profit_sell, num_buys, num_sells
-            - cum_profit, cum_profit_buy, cum_profit_sell
-            - drawdown, drawdown_pct
-            - wins, win_rate
-            - profit_ma7, profit_ma30, win_rate_ma7
+            Daily aggregated data
         """
         return self.daily.copy()
 
     # =========================================================================
-    # EQUITY CURVE
+    # EQUITY CURVE (DAILY)
     # =========================================================================
     def plot_equity_curve(
         self,
@@ -212,7 +216,7 @@ class BacktestVisualizer:
         title_suffix: str = ''
     ):
         """
-        Plot the equity curve with optional drawdown subplot.
+        Plot the daily equity curve with optional drawdown subplot.
         
         Parameters
         ----------
@@ -226,13 +230,12 @@ class BacktestVisualizer:
         Returns
         -------
         matplotlib.pyplot
-            The pyplot object for further customization
         """
         figsize = figsize or self.config.figsize
         colors = self.config.colors
         
         # Build title
-        base_title = f'Curva de Equity - {self.symbol} ({self.timeframe})'
+        base_title = f'Curva de Equity Diária - {self.symbol} ({self.timeframe})'
         if title_suffix:
             base_title += f'\n{title_suffix}'
         
@@ -246,77 +249,81 @@ class BacktestVisualizer:
             
             # Equity curve
             ax1.plot(
-                self.results.index, 
-                self.results['equity'],
+                self.daily.index, 
+                self.daily['equity'],
                 color=colors['equity'],
-                linewidth=self.config.line_width
+                linewidth=self.config.line_width,
+                marker='o',
+                markersize=3
             )
             ax1.axhline(y=0, color='gray', linestyle='--', alpha=0.5)
             ax1.set_title(base_title, fontsize=self.config.title_fontsize)
-            ax1.set_ylabel('Resultado (R$)', fontsize=self.config.label_fontsize)
+            ax1.set_ylabel('Resultado Acumulado (R$)', fontsize=self.config.label_fontsize)
             ax1.grid(True, alpha=self.config.grid_alpha)
             
             # Fill positive/negative regions
             ax1.fill_between(
-                self.results.index,
-                self.results['equity'],
+                self.daily.index,
+                self.daily['equity'],
                 0,
-                where=self.results['equity'] >= 0,
+                where=self.daily['equity'] >= 0,
                 color=colors['buy'],
                 alpha=0.2
             )
             ax1.fill_between(
-                self.results.index,
-                self.results['equity'],
+                self.daily.index,
+                self.daily['equity'],
                 0,
-                where=self.results['equity'] < 0,
+                where=self.daily['equity'] < 0,
                 color=colors['sell'],
                 alpha=0.2
             )
             
             # Drawdown subplot
             ax2.fill_between(
-                self.results.index, 
-                self.results['drawdown'], 
+                self.daily.index, 
+                self.daily['drawdown'], 
                 0, 
                 color=colors['drawdown'], 
                 alpha=0.3
             )
             ax2.plot(
-                self.results.index,
-                self.results['drawdown'],
+                self.daily.index,
+                self.daily['drawdown'],
                 color=colors['drawdown'],
                 linewidth=0.8
             )
-            ax2.set_title('Drawdown (R$)', fontsize=self.config.title_fontsize - 2)
+            ax2.set_title('Drawdown Diário (R$)', fontsize=self.config.title_fontsize - 2)
             ax2.set_ylabel('Drawdown (R$)', fontsize=self.config.label_fontsize)
-            ax2.set_xlabel('Data/Hora', fontsize=self.config.label_fontsize)
+            ax2.set_xlabel('Data', fontsize=self.config.label_fontsize)
             ax2.grid(True, alpha=self.config.grid_alpha)
             
             plt.tight_layout()
         else:
             plt.figure(figsize=figsize)
             plt.plot(
-                self.results.index, 
-                self.results['equity'],
+                self.daily.index, 
+                self.daily['equity'],
                 color=colors['equity'],
-                linewidth=self.config.line_width
+                linewidth=self.config.line_width,
+                marker='o',
+                markersize=3
             )
             plt.axhline(y=0, color='gray', linestyle='--', alpha=0.5)
             plt.title(base_title, fontsize=self.config.title_fontsize)
-            plt.xlabel('Data/Hora', fontsize=self.config.label_fontsize)
-            plt.ylabel('Resultado (R$)', fontsize=self.config.label_fontsize)
+            plt.xlabel('Data', fontsize=self.config.label_fontsize)
+            plt.ylabel('Resultado Acumulado (R$)', fontsize=self.config.label_fontsize)
             plt.grid(True, alpha=self.config.grid_alpha)
             plt.tight_layout()
         
         return plt
 
     # =========================================================================
-    # DRAWDOWN ANALYSIS
+    # DRAWDOWN ANALYSIS (DAILY)
     # =========================================================================
     def plot_drawdown(self, figsize: Optional[Tuple[int, int]] = None):
         """
-        Plot detailed drawdown analysis.
+        Plot detailed daily drawdown analysis.
         
         Parameters
         ----------
@@ -334,20 +341,20 @@ class BacktestVisualizer:
         
         # Drawdown in R$
         ax1.fill_between(
-            self.results.index, 
-            self.results['drawdown'], 
+            self.daily.index, 
+            self.daily['drawdown'], 
             0, 
             color=colors['drawdown'], 
             alpha=0.3
         )
         ax1.plot(
-            self.results.index,
-            self.results['drawdown'],
+            self.daily.index,
+            self.daily['drawdown'],
             color=colors['drawdown'],
-            linewidth=0.8
+            linewidth=1
         )
         ax1.set_title(
-            f'Análise de Drawdown - {self.symbol} ({self.timeframe})',
+            f'Análise de Drawdown Diário - {self.symbol} ({self.timeframe})',
             fontsize=self.config.title_fontsize
         )
         ax1.set_ylabel('Drawdown (R$)', fontsize=self.config.label_fontsize)
@@ -355,31 +362,31 @@ class BacktestVisualizer:
         
         # Drawdown percentage
         ax2.fill_between(
-            self.results.index,
-            self.results['drawdown_pct'] * 100,
+            self.daily.index,
+            self.daily['drawdown_pct'] * 100,
             0,
             color=colors['drawdown'],
             alpha=0.3
         )
         ax2.plot(
-            self.results.index,
-            self.results['drawdown_pct'] * 100,
+            self.daily.index,
+            self.daily['drawdown_pct'] * 100,
             color=colors['drawdown'],
-            linewidth=0.8
+            linewidth=1
         )
         ax2.set_ylabel('Drawdown (%)', fontsize=self.config.label_fontsize)
-        ax2.set_xlabel('Data/Hora', fontsize=self.config.label_fontsize)
+        ax2.set_xlabel('Data', fontsize=self.config.label_fontsize)
         ax2.grid(True, alpha=self.config.grid_alpha)
         
         plt.tight_layout()
         return plt
 
     # =========================================================================
-    # BY POSITION (BUY/SELL)
+    # BY POSITION (DAILY)
     # =========================================================================
     def plot_by_position(self, figsize: Optional[Tuple[int, int]] = None):
         """
-        Plot equity curve separated by buy and sell positions.
+        Plot daily equity curve separated by buy and sell positions.
         
         Parameters
         ----------
@@ -393,40 +400,43 @@ class BacktestVisualizer:
         figsize = figsize or self.config.figsize
         colors = self.config.colors
         
-        # Calculate cumulative profits by position
-        df = self.results.copy()
-        df['profit_buy'] = np.where(df['flag_buy'] == 1, df['profit'], 0)
-        df['profit_sell'] = np.where(df['flag_sell'] == 1, df['profit'], 0)
-        df['cum_buy'] = df['profit_buy'].cumsum()
-        df['cum_sell'] = df['profit_sell'].cumsum()
-        
         plt.figure(figsize=figsize)
+        
         plt.plot(
-            df.index, df['equity'], 
-            label='Total', 
+            self.daily.index,
+            self.daily['cum_profit'],
+            label='Total',
             color=colors['total'],
-            linewidth=2
+            linewidth=2,
+            marker='o',
+            markersize=4
         )
         plt.plot(
-            df.index, df['cum_buy'], 
-            label='Compras', 
+            self.daily.index,
+            self.daily['cum_profit_buy'],
+            label='Compras',
             color=colors['buy'],
-            linewidth=1.5
+            linewidth=1.5,
+            marker='s',
+            markersize=3
         )
         plt.plot(
-            df.index, df['cum_sell'], 
-            label='Vendas', 
+            self.daily.index,
+            self.daily['cum_profit_sell'],
+            label='Vendas',
             color=colors['sell'],
-            linewidth=1.5
+            linewidth=1.5,
+            marker='^',
+            markersize=3
         )
         
         plt.axhline(y=0, color='gray', linestyle='--', alpha=0.5)
         plt.title(
-            f'Retorno Acumulado por Tipo de Posição - {self.symbol} ({self.timeframe})',
+            f'Retorno Acumulado Diário por Tipo de Posição - {self.symbol} ({self.timeframe})',
             fontsize=self.config.title_fontsize
         )
-        plt.xlabel('Data/Hora', fontsize=self.config.label_fontsize)
-        plt.ylabel('Resultado (R$)', fontsize=self.config.label_fontsize)
+        plt.xlabel('Data', fontsize=self.config.label_fontsize)
+        plt.ylabel('Resultado Acumulado (R$)', fontsize=self.config.label_fontsize)
         plt.grid(True, alpha=self.config.grid_alpha)
         plt.legend()
         plt.tight_layout()
@@ -434,7 +444,7 @@ class BacktestVisualizer:
         return plt
 
     # =========================================================================
-    # PROFIT BY HOUR
+    # PROFIT BY HOUR (AGGREGATED)
     # =========================================================================
     def plot_profit_by_hour(self, figsize: Optional[Tuple[int, int]] = None):
         """
@@ -452,25 +462,11 @@ class BacktestVisualizer:
         figsize = figsize or (14, 8)
         colors = self.config.colors
         
-        # Prepare data
-        trades = self.trades.copy()
-        trades['hour'] = trades.index.hour
-        
-        # Aggregate by hour
-        hourly = trades.groupby('hour').agg({
-            'profit': 'sum',
-            'trade_points': 'count'
-        }).rename(columns={'trade_points': 'num_trades'})
-        
-        # Separate by position
-        hourly_buy = trades[trades['position'] == 1].groupby('hour')['profit'].sum()
-        hourly_sell = trades[trades['position'] == -1].groupby('hour')['profit'].sum()
-        
         # Ensure all hours are represented
         all_hours = range(24)
-        hourly = hourly.reindex(all_hours, fill_value=0)
-        hourly_buy = hourly_buy.reindex(all_hours, fill_value=0)
-        hourly_sell = hourly_sell.reindex(all_hours, fill_value=0)
+        hourly = self.hourly.reindex(all_hours, fill_value=0)
+        hourly_buy = self.hourly_buy.reindex(all_hours, fill_value=0)
+        hourly_sell = self.hourly_sell.reindex(all_hours, fill_value=0)
         
         # Filter to hours with trades
         active_hours = hourly[hourly['num_trades'] > 0].index.tolist()
@@ -525,7 +521,7 @@ class BacktestVisualizer:
         return plt
 
     # =========================================================================
-    # CUMULATIVE BY HOUR
+    # CUMULATIVE BY HOUR (DAILY AGGREGATED)
     # =========================================================================
     def plot_cumulative_by_hour(self, figsize: Optional[Tuple[int, int]] = None):
         """
@@ -542,43 +538,46 @@ class BacktestVisualizer:
         """
         figsize = figsize or (14, 10)
         
-        # Prepare data
-        df = self.results.copy()
-        df['hour'] = df.index.hour
-        df['date'] = df.index.date
+        trades = self.trades.copy()
+        trades['hour'] = trades.index.hour
+        trades['date'] = trades.index.date
         
         # Get unique hours with trades
-        trades_hours = df[(df['flag_buy'] == 1) | (df['flag_sell'] == 1)]['hour'].unique()
-        hours = sorted(trades_hours)
+        hours = sorted(trades['hour'].unique())
         
         if len(hours) == 0:
             print("Nenhum trade encontrado para plotar.")
             return plt
         
-        # Create daily aggregation
-        daily_data = {}
-        for hour in hours:
-            hour_mask = df['hour'] == hour
-            buy_mask = hour_mask & (df['flag_buy'] == 1)
-            sell_mask = hour_mask & (df['flag_sell'] == 1)
-            
-            df[f'profit_h{hour}'] = np.where(hour_mask, df['profit'], 0)
-            df[f'profit_h{hour}_buy'] = np.where(buy_mask, df['profit'], 0)
-            df[f'profit_h{hour}_sell'] = np.where(sell_mask, df['profit'], 0)
-        
-        # Aggregate by date
-        daily_df = df.groupby('date').agg({
-            **{f'profit_h{h}': 'sum' for h in hours},
-            **{f'profit_h{h}_buy': 'sum' for h in hours},
-            **{f'profit_h{h}_sell': 'sum' for h in hours}
-        })
-        daily_df.index = pd.to_datetime(daily_df.index)
+        # Create daily aggregation per hour
+        pivot_data = trades.pivot_table(
+            values='profit',
+            index='date',
+            columns='hour',
+            aggfunc='sum',
+            fill_value=0
+        )
+        pivot_data.index = pd.to_datetime(pivot_data.index)
         
         # Calculate cumulative sums
-        for hour in hours:
-            daily_df[f'cum_h{hour}'] = daily_df[f'profit_h{hour}'].cumsum()
-            daily_df[f'cum_h{hour}_buy'] = daily_df[f'profit_h{hour}_buy'].cumsum()
-            daily_df[f'cum_h{hour}_sell'] = daily_df[f'profit_h{hour}_sell'].cumsum()
+        cum_data = pivot_data.cumsum()
+        
+        # Buy/Sell breakdown
+        buy_trades = trades[trades['position'] == 1]
+        sell_trades = trades[trades['position'] == -1]
+        
+        pivot_buy = buy_trades.pivot_table(
+            values='profit', index='date', columns='hour', aggfunc='sum', fill_value=0
+        )
+        pivot_sell = sell_trades.pivot_table(
+            values='profit', index='date', columns='hour', aggfunc='sum', fill_value=0
+        )
+        
+        pivot_buy.index = pd.to_datetime(pivot_buy.index)
+        pivot_sell.index = pd.to_datetime(pivot_sell.index)
+        
+        cum_buy = pivot_buy.reindex(columns=hours, fill_value=0).cumsum()
+        cum_sell = pivot_sell.reindex(columns=hours, fill_value=0).cumsum()
         
         # Create color palette
         cmap = cm.get_cmap('tab20', len(hours))
@@ -588,13 +587,14 @@ class BacktestVisualizer:
         
         # Total
         for i, hour in enumerate(hours):
-            axs[0].plot(
-                daily_df.index, 
-                daily_df[f'cum_h{hour}'], 
-                label=f'{hour:02d}h', 
-                color=cmap(i),
-                linewidth=1.2
-            )
+            if hour in cum_data.columns:
+                axs[0].plot(
+                    cum_data.index, 
+                    cum_data[hour], 
+                    label=f'{hour:02d}h', 
+                    color=cmap(i),
+                    linewidth=1.2
+                )
         axs[0].set_title(
             f'Lucro Acumulado por Hora do Dia - {self.symbol} ({self.timeframe})',
             fontsize=self.config.title_fontsize
@@ -606,13 +606,14 @@ class BacktestVisualizer:
         
         # Buys only
         for i, hour in enumerate(hours):
-            axs[1].plot(
-                daily_df.index, 
-                daily_df[f'cum_h{hour}_buy'], 
-                label=f'{hour:02d}h', 
-                color=cmap(i),
-                linewidth=1.2
-            )
+            if hour in cum_buy.columns:
+                axs[1].plot(
+                    cum_buy.index, 
+                    cum_buy[hour], 
+                    label=f'{hour:02d}h', 
+                    color=cmap(i),
+                    linewidth=1.2
+                )
         axs[1].set_title('Lucro Acumulado por Hora - Apenas Compras', fontsize=self.config.title_fontsize - 2)
         axs[1].set_ylabel('Resultado (R$)', fontsize=self.config.label_fontsize)
         axs[1].axhline(y=0, color='gray', linestyle='--', alpha=0.5)
@@ -621,13 +622,14 @@ class BacktestVisualizer:
         
         # Sells only
         for i, hour in enumerate(hours):
-            axs[2].plot(
-                daily_df.index, 
-                daily_df[f'cum_h{hour}_sell'], 
-                label=f'{hour:02d}h', 
-                color=cmap(i),
-                linewidth=1.2
-            )
+            if hour in cum_sell.columns:
+                axs[2].plot(
+                    cum_sell.index, 
+                    cum_sell[hour], 
+                    label=f'{hour:02d}h', 
+                    color=cmap(i),
+                    linewidth=1.2
+                )
         axs[2].set_title('Lucro Acumulado por Hora - Apenas Vendas', fontsize=self.config.title_fontsize - 2)
         axs[2].set_xlabel('Data', fontsize=self.config.label_fontsize)
         axs[2].set_ylabel('Resultado (R$)', fontsize=self.config.label_fontsize)
@@ -641,7 +643,7 @@ class BacktestVisualizer:
         return plt
 
     # =========================================================================
-    # TRADE DISTRIBUTION
+    # TRADE DISTRIBUTION (FROM TRADES)
     # =========================================================================
     def plot_trade_distribution(self, figsize: Optional[Tuple[int, int]] = None):
         """
@@ -794,22 +796,13 @@ class BacktestVisualizer:
         figsize = figsize or (14, 6)
         colors = self.config.colors
         
-        # Aggregate by day
-        trades = self.trades.copy()
-        trades['date'] = trades.index.date
-        
-        daily = trades.groupby('date').agg({
-            'profit': 'sum',
-            'trade_points': ['sum', 'count']
-        })
-        daily.columns = ['profit', 'points', 'num_trades']
-        daily['cum_profit'] = daily['profit'].cumsum()
-        
         fig, axes = plt.subplots(2, 1, figsize=(figsize[0], figsize[1] * 1.5), sharex=True)
         
+        x = range(len(self.daily))
+        
         # Daily profit bars
-        bar_colors = [colors['buy'] if x >= 0 else colors['sell'] for x in daily['profit']]
-        axes[0].bar(range(len(daily)), daily['profit'], color=bar_colors, alpha=0.8)
+        bar_colors = [colors['buy'] if x >= 0 else colors['sell'] for x in self.daily['profit']]
+        axes[0].bar(x, self.daily['profit'], color=bar_colors, alpha=0.8)
         axes[0].axhline(y=0, color='gray', linestyle='-', alpha=0.5)
         axes[0].set_title(
             f'Resultado Diário - {self.symbol} ({self.timeframe})',
@@ -819,7 +812,7 @@ class BacktestVisualizer:
         axes[0].grid(True, axis='y', alpha=self.config.grid_alpha)
         
         # Add number of trades as text
-        for i, (profit, num) in enumerate(zip(daily['profit'], daily['num_trades'])):
+        for i, (profit, num) in enumerate(zip(self.daily['profit'], self.daily['num_trades'])):
             axes[0].annotate(
                 f'{num}', 
                 xy=(i, profit), 
@@ -831,26 +824,26 @@ class BacktestVisualizer:
         
         # Cumulative profit line
         axes[1].plot(
-            range(len(daily)), 
-            daily['cum_profit'],
+            x, 
+            self.daily['cum_profit'],
             color=colors['equity'],
             linewidth=2,
             marker='o',
             markersize=4
         )
         axes[1].fill_between(
-            range(len(daily)),
-            daily['cum_profit'],
+            x,
+            self.daily['cum_profit'],
             0,
-            where=daily['cum_profit'] >= 0,
+            where=self.daily['cum_profit'] >= 0,
             color=colors['buy'],
             alpha=0.2
         )
         axes[1].fill_between(
-            range(len(daily)),
-            daily['cum_profit'],
+            x,
+            self.daily['cum_profit'],
             0,
-            where=daily['cum_profit'] < 0,
+            where=self.daily['cum_profit'] < 0,
             color=colors['sell'],
             alpha=0.2
         )
@@ -861,238 +854,20 @@ class BacktestVisualizer:
         axes[1].grid(True, alpha=self.config.grid_alpha)
         
         # X-axis labels
-        axes[1].set_xticks(range(len(daily)))
+        axes[1].set_xticks(x)
         axes[1].set_xticklabels(
-            [d.strftime('%d/%m') for d in daily.index], 
+            [d.strftime('%d/%m') for d in self.daily.index], 
             rotation=45, 
-            ha='right'
+            ha='right',
+            fontsize=8
         )
         
         plt.tight_layout()
         return plt
 
     # =========================================================================
-    # COMPLETE DASHBOARD
+    # DAILY RETURNS
     # =========================================================================
-    def plot_dashboard(self, figsize: Optional[Tuple[int, int]] = None):
-        """
-        Create a comprehensive dashboard with multiple visualizations.
-        
-        Parameters
-        ----------
-        figsize : tuple, optional
-            Figure dimensions (width, height)
-        
-        Returns
-        -------
-        matplotlib.pyplot
-        """
-        figsize = figsize or (16, 12)
-        colors = self.config.colors
-        
-        fig = plt.figure(figsize=figsize)
-        
-        # Define grid layout
-        gs = fig.add_gridspec(3, 3, hspace=0.3, wspace=0.3)
-        
-        # 1. Equity curve (top, spans 2 columns)
-        ax1 = fig.add_subplot(gs[0, :2])
-        ax1.plot(
-            self.results.index, 
-            self.results['equity'],
-            color=colors['equity'],
-            linewidth=1.5
-        )
-        ax1.fill_between(
-            self.results.index,
-            self.results['equity'],
-            0,
-            where=self.results['equity'] >= 0,
-            color=colors['buy'],
-            alpha=0.2
-        )
-        ax1.fill_between(
-            self.results.index,
-            self.results['equity'],
-            0,
-            where=self.results['equity'] < 0,
-            color=colors['sell'],
-            alpha=0.2
-        )
-        ax1.axhline(y=0, color='gray', linestyle='--', alpha=0.5)
-        ax1.set_title('Curva de Equity', fontsize=12)
-        ax1.set_ylabel('Resultado (R$)')
-        ax1.grid(True, alpha=0.3)
-        
-        # 2. Trade outcomes pie (top right)
-        ax2 = fig.add_subplot(gs[0, 2])
-        wins = len(self.trades[self.trades['profit'] > 0])
-        losses = len(self.trades[self.trades['profit'] < 0])
-        sizes = [wins, losses]
-        ax2.pie(
-            sizes, 
-            labels=[f'Ganhos\n({wins})', f'Perdas\n({losses})'],
-            colors=[colors['buy'], colors['sell']],
-            autopct='%1.1f%%',
-            startangle=90
-        )
-        ax2.set_title('Win/Loss', fontsize=12)
-        
-        # 3. Drawdown (middle left, spans 2 columns)
-        ax3 = fig.add_subplot(gs[1, :2])
-        ax3.fill_between(
-            self.results.index, 
-            self.results['drawdown'], 
-            0, 
-            color=colors['drawdown'], 
-            alpha=0.3
-        )
-        ax3.set_title('Drawdown', fontsize=12)
-        ax3.set_ylabel('Drawdown (R$)')
-        ax3.grid(True, alpha=0.3)
-        
-        # 4. Distribution histogram (middle right)
-        ax4 = fig.add_subplot(gs[1, 2])
-        ax4.hist(
-            self.trades['profit'], 
-            bins=20, 
-            color=colors['equity'], 
-            alpha=0.7,
-            edgecolor='white'
-        )
-        ax4.axvline(x=0, color='gray', linestyle='--', alpha=0.7)
-        ax4.set_title('Distribuição', fontsize=12)
-        ax4.set_xlabel('Resultado (R$)')
-        
-        # 5. By position (bottom, spans full width)
-        ax5 = fig.add_subplot(gs[2, :])
-        df = self.results.copy()
-        df['cum_buy'] = np.where(df['flag_buy'] == 1, df['profit'], 0).cumsum()
-        df['cum_sell'] = np.where(df['flag_sell'] == 1, df['profit'], 0).cumsum()
-        
-        ax5.plot(df.index, df['equity'], label='Total', color=colors['total'], linewidth=2)
-        ax5.plot(df.index, df['cum_buy'], label='Compras', color=colors['buy'], linewidth=1.5)
-        ax5.plot(df.index, df['cum_sell'], label='Vendas', color=colors['sell'], linewidth=1.5)
-        ax5.axhline(y=0, color='gray', linestyle='--', alpha=0.5)
-        ax5.set_title('Resultado por Tipo de Posição', fontsize=12)
-        ax5.set_xlabel('Data/Hora')
-        ax5.set_ylabel('Resultado (R$)')
-        ax5.legend(loc='upper left')
-        ax5.grid(True, alpha=0.3)
-        
-        fig.suptitle(
-            f'Dashboard de Backtest - {self.symbol} ({self.timeframe})',
-            fontsize=16,
-            fontweight='bold'
-        )
-        
-        plt.tight_layout()
-        return plt
-
-    # =========================================================================
-    # DAILY VISUALIZATION METHODS
-    # =========================================================================
-    def plot_daily_equity(self, figsize: Optional[Tuple[int, int]] = None, include_drawdown: bool = True):
-        """
-        Plot daily equity curve with optional drawdown.
-        
-        Parameters
-        ----------
-        figsize : tuple, optional
-            Figure dimensions (width, height)
-        include_drawdown : bool
-            If True, includes a drawdown subplot (default: True)
-        
-        Returns
-        -------
-        matplotlib.pyplot
-        """
-        figsize = figsize or self.config.figsize
-        colors = self.config.colors
-        
-        if include_drawdown:
-            fig, (ax1, ax2) = plt.subplots(
-                2, 1,
-                figsize=(figsize[0], figsize[1] * 1.5),
-                gridspec_kw={'height_ratios': [3, 1]},
-                sharex=True
-            )
-            
-            # Daily equity curve
-            ax1.plot(
-                self.daily.index,
-                self.daily['cum_profit'],
-                color=colors['equity'],
-                linewidth=2,
-                marker='o',
-                markersize=4
-            )
-            ax1.fill_between(
-                self.daily.index,
-                self.daily['cum_profit'],
-                0,
-                where=self.daily['cum_profit'] >= 0,
-                color=colors['buy'],
-                alpha=0.2
-            )
-            ax1.fill_between(
-                self.daily.index,
-                self.daily['cum_profit'],
-                0,
-                where=self.daily['cum_profit'] < 0,
-                color=colors['sell'],
-                alpha=0.2
-            )
-            ax1.axhline(y=0, color='gray', linestyle='--', alpha=0.5)
-            ax1.set_title(
-                f'Curva de Equity Diária - {self.symbol} ({self.timeframe})',
-                fontsize=self.config.title_fontsize
-            )
-            ax1.set_ylabel('Resultado Acumulado (R$)', fontsize=self.config.label_fontsize)
-            ax1.grid(True, alpha=self.config.grid_alpha)
-            
-            # Daily drawdown
-            ax2.fill_between(
-                self.daily.index,
-                self.daily['drawdown'],
-                0,
-                color=colors['drawdown'],
-                alpha=0.3
-            )
-            ax2.plot(
-                self.daily.index,
-                self.daily['drawdown'],
-                color=colors['drawdown'],
-                linewidth=1
-            )
-            ax2.set_title('Drawdown Diário (R$)', fontsize=self.config.title_fontsize - 2)
-            ax2.set_ylabel('Drawdown (R$)', fontsize=self.config.label_fontsize)
-            ax2.set_xlabel('Data', fontsize=self.config.label_fontsize)
-            ax2.grid(True, alpha=self.config.grid_alpha)
-            
-            plt.tight_layout()
-        else:
-            plt.figure(figsize=figsize)
-            plt.plot(
-                self.daily.index,
-                self.daily['cum_profit'],
-                color=colors['equity'],
-                linewidth=2,
-                marker='o',
-                markersize=4
-            )
-            plt.axhline(y=0, color='gray', linestyle='--', alpha=0.5)
-            plt.title(
-                f'Curva de Equity Diária - {self.symbol} ({self.timeframe})',
-                fontsize=self.config.title_fontsize
-            )
-            plt.xlabel('Data', fontsize=self.config.label_fontsize)
-            plt.ylabel('Resultado Acumulado (R$)', fontsize=self.config.label_fontsize)
-            plt.grid(True, alpha=self.config.grid_alpha)
-            plt.tight_layout()
-        
-        return plt
-
     def plot_daily_returns(self, figsize: Optional[Tuple[int, int]] = None):
         """
         Plot daily returns as bar chart with cumulative line overlay.
@@ -1111,10 +886,12 @@ class BacktestVisualizer:
         
         fig, ax1 = plt.subplots(figsize=figsize)
         
+        x = range(len(self.daily))
+        
         # Daily profit bars
-        bar_colors = [colors['buy'] if x >= 0 else colors['sell'] for x in self.daily['profit']]
+        bar_colors = [colors['buy'] if p >= 0 else colors['sell'] for p in self.daily['profit']]
         bars = ax1.bar(
-            range(len(self.daily)),
+            x,
             self.daily['profit'],
             color=bar_colors,
             alpha=0.7,
@@ -1127,7 +904,7 @@ class BacktestVisualizer:
         # Cumulative line on secondary axis
         ax2 = ax1.twinx()
         ax2.plot(
-            range(len(self.daily)),
+            x,
             self.daily['cum_profit'],
             color=colors['total'],
             linewidth=2,
@@ -1136,7 +913,7 @@ class BacktestVisualizer:
         ax2.set_ylabel('Resultado Acumulado (R$)', fontsize=self.config.label_fontsize)
         
         # X-axis labels
-        ax1.set_xticks(range(len(self.daily)))
+        ax1.set_xticks(x)
         ax1.set_xticklabels(
             [d.strftime('%d/%m') for d in self.daily.index],
             rotation=45,
@@ -1158,65 +935,9 @@ class BacktestVisualizer:
         plt.tight_layout()
         return plt
 
-    def plot_daily_by_position(self, figsize: Optional[Tuple[int, int]] = None):
-        """
-        Plot daily equity curve separated by buy and sell positions.
-        
-        Parameters
-        ----------
-        figsize : tuple, optional
-            Figure dimensions (width, height)
-        
-        Returns
-        -------
-        matplotlib.pyplot
-        """
-        figsize = figsize or self.config.figsize
-        colors = self.config.colors
-        
-        plt.figure(figsize=figsize)
-        
-        plt.plot(
-            self.daily.index,
-            self.daily['cum_profit'],
-            label='Total',
-            color=colors['total'],
-            linewidth=2,
-            marker='o',
-            markersize=4
-        )
-        plt.plot(
-            self.daily.index,
-            self.daily['cum_profit_buy'],
-            label='Compras',
-            color=colors['buy'],
-            linewidth=1.5,
-            marker='s',
-            markersize=3
-        )
-        plt.plot(
-            self.daily.index,
-            self.daily['cum_profit_sell'],
-            label='Vendas',
-            color=colors['sell'],
-            linewidth=1.5,
-            marker='^',
-            markersize=3
-        )
-        
-        plt.axhline(y=0, color='gray', linestyle='--', alpha=0.5)
-        plt.title(
-            f'Retorno Acumulado Diário por Tipo de Posição - {self.symbol} ({self.timeframe})',
-            fontsize=self.config.title_fontsize
-        )
-        plt.xlabel('Data', fontsize=self.config.label_fontsize)
-        plt.ylabel('Resultado Acumulado (R$)', fontsize=self.config.label_fontsize)
-        plt.grid(True, alpha=self.config.grid_alpha)
-        plt.legend()
-        plt.tight_layout()
-        
-        return plt
-
+    # =========================================================================
+    # DAILY METRICS
+    # =========================================================================
     def plot_daily_metrics(self, figsize: Optional[Tuple[int, int]] = None):
         """
         Plot multiple daily metrics: trades count, win rate, and profit.
@@ -1288,6 +1009,9 @@ class BacktestVisualizer:
         
         return plt
 
+    # =========================================================================
+    # DAILY HEATMAP
+    # =========================================================================
     def plot_daily_heatmap(self, figsize: Optional[Tuple[int, int]] = None):
         """
         Plot calendar heatmap of daily profits.
@@ -1356,9 +1080,12 @@ class BacktestVisualizer:
         plt.tight_layout()
         return plt
 
-    def plot_daily_dashboard(self, figsize: Optional[Tuple[int, int]] = None):
+    # =========================================================================
+    # COMPLETE DASHBOARD (DAILY)
+    # =========================================================================
+    def plot_dashboard(self, figsize: Optional[Tuple[int, int]] = None):
         """
-        Create a comprehensive daily dashboard.
+        Create a comprehensive daily dashboard with multiple visualizations.
         
         Parameters
         ----------
@@ -1417,13 +1144,15 @@ class BacktestVisualizer:
         total_profit = self.daily['profit'].sum()
         avg_daily = self.daily['profit'].mean()
         max_dd = abs(self.daily['drawdown'].min())
+        total_trades = len(self.trades)
         
         stats_text = f"""
-        RESUMO DIÁRIO
+        RESUMO
         {'─' * 25}
         Dias operados: {total_days}
         Dias positivos: {winning_days} ({winning_days/total_days*100:.1f}%)
         
+        Total trades: {total_trades}
         Lucro total: R$ {total_profit:.2f}
         Média diária: R$ {avg_daily:.2f}
         
@@ -1489,53 +1218,6 @@ class BacktestVisualizer:
         plt.tight_layout()
         return plt
 
-    def print_daily_summary(self):
-        """Print formatted daily statistics summary."""
-        daily = self.daily
-        
-        total_days = len(daily)
-        winning_days = len(daily[daily['profit'] > 0])
-        losing_days = len(daily[daily['profit'] < 0])
-        
-        print("=" * 60)
-        print(f"RESUMO DIÁRIO - {self.symbol} ({self.timeframe})")
-        print("=" * 60)
-        
-        print(f"\n{'PERÍODO':^60}")
-        print("-" * 60)
-        print(f"Data inicial:         {daily.index.min().strftime('%Y-%m-%d')}")
-        print(f"Data final:           {daily.index.max().strftime('%Y-%m-%d')}")
-        print(f"Total de dias:        {total_days}")
-        
-        print(f"\n{'RESULTADOS DIÁRIOS':^60}")
-        print("-" * 60)
-        print(f"Dias positivos:       {winning_days} ({winning_days/total_days*100:.1f}%)")
-        print(f"Dias negativos:       {losing_days} ({losing_days/total_days*100:.1f}%)")
-        print(f"Lucro total:          R$ {daily['profit'].sum():.2f}")
-        print(f"Média diária:         R$ {daily['profit'].mean():.2f}")
-        print(f"Desvio padrão:        R$ {daily['profit'].std():.2f}")
-        print(f"Melhor dia:           R$ {daily['profit'].max():.2f}")
-        print(f"Pior dia:             R$ {daily['profit'].min():.2f}")
-        
-        print(f"\n{'TRADES':^60}")
-        print("-" * 60)
-        print(f"Total de trades:      {daily['num_trades'].sum()}")
-        print(f"Média trades/dia:     {daily['num_trades'].mean():.1f}")
-        print(f"Total compras:        {daily['num_buys'].sum()}")
-        print(f"Total vendas:         {daily['num_sells'].sum()}")
-        
-        print(f"\n{'RISCO':^60}")
-        print("-" * 60)
-        print(f"Max Drawdown:         R$ {abs(daily['drawdown'].min()):.2f}")
-        print(f"Max Drawdown (%):     {abs(daily['drawdown_pct'].min())*100:.2f}%")
-        
-        # Sharpe ratio (simplified, assuming risk-free = 0)
-        if daily['profit'].std() > 0:
-            sharpe = (daily['profit'].mean() / daily['profit'].std()) * np.sqrt(252)
-            print(f"Sharpe Ratio (anual): {sharpe:.2f}")
-        
-        print("=" * 60)
-
     # =========================================================================
     # SUMMARY STATISTICS
     # =========================================================================
@@ -1549,7 +1231,7 @@ class BacktestVisualizer:
             Dictionary with all relevant statistics
         """
         trades = self.trades
-        results = self.results
+        daily = self.daily
         
         total_trades = len(trades)
         if total_trades == 0:
@@ -1559,6 +1241,13 @@ class BacktestVisualizer:
         losses = len(trades[trades['profit'] < 0])
         
         stats = {
+            # Period info
+            'start_date': daily.index.min().strftime('%Y-%m-%d'),
+            'end_date': daily.index.max().strftime('%Y-%m-%d'),
+            'total_days': len(daily),
+            'winning_days': len(daily[daily['profit'] > 0]),
+            'losing_days': len(daily[daily['profit'] < 0]),
+            
             # Trade counts
             'total_trades': total_trades,
             'winning_trades': wins,
@@ -1574,19 +1263,23 @@ class BacktestVisualizer:
             'total_profit': trades['profit'].sum(),
             'total_points': trades['trade_points'].sum(),
             'avg_profit': trades['profit'].mean(),
+            'avg_daily_profit': daily['profit'].mean(),
             'avg_win': trades.loc[trades['profit'] > 0, 'profit'].mean() if wins > 0 else 0,
             'avg_loss': trades.loc[trades['profit'] < 0, 'profit'].mean() if losses > 0 else 0,
             'max_profit': trades['profit'].max(),
             'max_loss': trades['profit'].min(),
+            'best_day': daily['profit'].max(),
+            'worst_day': daily['profit'].min(),
             
             # Risk metrics
-            'max_drawdown': abs(results['drawdown'].min()),
-            'max_drawdown_pct': abs(results['drawdown_pct'].min()) * 100,
-            'peak_profit': results['equity'].max(),
+            'max_drawdown': abs(daily['drawdown'].min()),
+            'max_drawdown_pct': abs(daily['drawdown_pct'].min()) * 100,
+            'peak_profit': daily['cum_profit'].max(),
             
             # Ratios
             'profit_factor': None,
-            'risk_reward': None
+            'risk_reward': None,
+            'sharpe_ratio': None
         }
         
         # Calculate profit factor
@@ -1598,6 +1291,10 @@ class BacktestVisualizer:
         # Calculate risk/reward
         if stats['avg_loss'] != 0:
             stats['risk_reward'] = abs(stats['avg_win'] / stats['avg_loss'])
+        
+        # Calculate Sharpe ratio (simplified, assuming risk-free = 0)
+        if daily['profit'].std() > 0:
+            stats['sharpe_ratio'] = (daily['profit'].mean() / daily['profit'].std()) * np.sqrt(252)
         
         return stats
 
@@ -1613,6 +1310,14 @@ class BacktestVisualizer:
         print(f"RESUMO DO BACKTEST - {self.symbol} ({self.timeframe})")
         print("=" * 60)
         
+        print(f"\n{'PERÍODO':^60}")
+        print("-" * 60)
+        print(f"Data inicial:         {stats['start_date']}")
+        print(f"Data final:           {stats['end_date']}")
+        print(f"Total de dias:        {stats['total_days']}")
+        print(f"Dias positivos:       {stats['winning_days']} ({stats['winning_days']/stats['total_days']*100:.1f}%)")
+        print(f"Dias negativos:       {stats['losing_days']} ({stats['losing_days']/stats['total_days']*100:.1f}%)")
+        
         print(f"\n{'TRADES':^60}")
         print("-" * 60)
         print(f"Total de trades:      {stats['total_trades']}")
@@ -1625,9 +1330,12 @@ class BacktestVisualizer:
         print(f"Taxa de acerto:       {stats['win_rate']:.1f}%")
         print(f"Lucro total:          R$ {stats['total_profit']:.2f}")
         print(f"Pontos totais:        {stats['total_points']:.0f}")
-        print(f"Lucro médio:          R$ {stats['avg_profit']:.2f}")
+        print(f"Lucro médio (trade):  R$ {stats['avg_profit']:.2f}")
+        print(f"Lucro médio (diário): R$ {stats['avg_daily_profit']:.2f}")
         print(f"Média ganhos:         R$ {stats['avg_win']:.2f}")
         print(f"Média perdas:         R$ {stats['avg_loss']:.2f}")
+        print(f"Melhor dia:           R$ {stats['best_day']:.2f}")
+        print(f"Pior dia:             R$ {stats['worst_day']:.2f}")
         
         print(f"\n{'RISCO':^60}")
         print("-" * 60)
@@ -1647,6 +1355,10 @@ class BacktestVisualizer:
             print(f"Risk/Reward:          {stats['risk_reward']:.2f}")
         else:
             print("Risk/Reward:          N/A")
+        if stats['sharpe_ratio']:
+            print(f"Sharpe Ratio (anual): {stats['sharpe_ratio']:.2f}")
+        else:
+            print("Sharpe Ratio:         N/A")
         
         print("=" * 60)
 
@@ -1655,47 +1367,6 @@ class BacktestVisualizer:
 # CONVENIENCE FUNCTIONS
 # =============================================================================
 def quick_plot(
-    results: pd.DataFrame, 
-    trades: pd.DataFrame,
-    symbol: str = 'WIN',
-    timeframe: str = 'Tick',
-    daily: bool = False
-):
-    """
-    Quick visualization of backtest results.
-    
-    Parameters
-    ----------
-    results : pd.DataFrame
-        Full results DataFrame from run_backtest()
-    trades : pd.DataFrame
-        Trades-only DataFrame from run_backtest()
-    symbol : str
-        Trading symbol name
-    timeframe : str
-        Timeframe description
-    daily : bool
-        If True, show daily dashboard instead of tick-level (default: False)
-    
-    Example
-    -------
-    >>> results, trades = run_backtest(tick_data, config)
-    >>> quick_plot(results, trades, daily=True)
-    >>> plt.show()
-    """
-    viz = BacktestVisualizer(results, trades, symbol, timeframe)
-    
-    if daily:
-        viz.print_daily_summary()
-        viz.plot_daily_dashboard()
-    else:
-        viz.print_statistics()
-        viz.plot_dashboard()
-    
-    return viz
-
-
-def quick_daily_plot(
     results: pd.DataFrame, 
     trades: pd.DataFrame,
     symbol: str = 'WIN',
@@ -1718,61 +1389,57 @@ def quick_daily_plot(
     Example
     -------
     >>> results, trades = run_backtest(tick_data, config)
-    >>> quick_daily_plot(results, trades)
+    >>> quick_plot(results, trades)
     >>> plt.show()
     """
-    return quick_plot(results, trades, symbol, timeframe, daily=True)
+    viz = BacktestVisualizer(results, trades, symbol, timeframe)
+    viz.print_statistics()
+    viz.plot_dashboard()
+    
+    return viz
 
 
 # =============================================================================
 # MAIN EXECUTION (EXAMPLE)
 # =============================================================================
 if __name__ == "__main__":
-    # This example shows how to use the visualizer
-    # You need to import and run the backtest first
-    
     print("=" * 60)
-    print("VISUALIZATION MODULE FOR DYNAMIC GRID TRADING")
+    print("VISUALIZATION MODULE FOR DYNAMIC GRID TRADING (DAILY)")
     print("=" * 60)
     print("""
     Usage Example:
     --------------
     from backtest_dynamic_grid import run_backtest, load_date_range, StrategyConfig
-    from visualization_dynamic_grid import BacktestVisualizer, quick_plot, quick_daily_plot
+    from visualization_dynamic_grid_daily import BacktestVisualizer, quick_plot
     
     # Load data and run backtest
     tick_data = load_date_range(base_path, '2024-01-01', '2024-12-31')
     config = StrategyConfig(distance=70, stop_loss=50, take_profit=100)
     results, trades = run_backtest(tick_data, config)
     
-    # Option 1: Quick visualization (tick-level)
+    # Quick visualization
     viz = quick_plot(results, trades, symbol='WIN', timeframe='Tick')
     plt.show()
     
-    # Option 2: Quick daily visualization
-    viz = quick_daily_plot(results, trades, symbol='WIN', timeframe='Tick')
-    plt.show()
-    
-    # Option 3: Individual plots
+    # Or use individual plots
     viz = BacktestVisualizer(results, trades, symbol='WIN', timeframe='Tick')
     
-    # Tick-level plots
+    # All plots now use daily aggregated data:
     viz.plot_equity_curve()
+    viz.plot_drawdown()
     viz.plot_by_position()
     viz.plot_profit_by_hour()
-    viz.plot_dashboard()
-    
-    # Daily plots (NEW)
-    viz.plot_daily_equity()
+    viz.plot_cumulative_by_hour()
+    viz.plot_trade_distribution()
+    viz.plot_trade_outcomes()
+    viz.plot_daily_performance()
     viz.plot_daily_returns()
-    viz.plot_daily_by_position()
     viz.plot_daily_metrics()
     viz.plot_daily_heatmap()
-    viz.plot_daily_dashboard()
+    viz.plot_dashboard()
     
     # Get statistics
-    viz.print_statistics()       # Tick-level stats
-    viz.print_daily_summary()    # Daily stats
+    viz.print_statistics()
     
     # Access daily data directly
     daily_df = viz.get_daily_data()
