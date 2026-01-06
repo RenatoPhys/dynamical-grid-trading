@@ -275,9 +275,9 @@ def generate_signals(df: pd.DataFrame, distance: int, invert_signals: bool = Fal
     mask = (df['timestamp'].dt.second == 0) & (df['timestamp'].dt.second != 0).shift(1, fill_value=False)
     df.loc[mask, 'flag_pending_order'] = 1
     
-    # Reference price (price at pending order creation)
+    # Reference price (closing price of previous minute, i.e., price just before the new minute starts)
     df['price_ref'] = np.nan
-    df.loc[df['flag_pending_order'] == 1, 'price_ref'] = df.loc[df['flag_pending_order'] == 1, 'price']
+    df.loc[df['flag_pending_order'] == 1, 'price_ref'] = df['price'].shift(1).loc[df['flag_pending_order'] == 1]
     df['price_ref'] = df['price_ref'].ffill()
     
     # Delta from reference
